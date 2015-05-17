@@ -25,8 +25,10 @@
 #include <stm32f10x_gpio.h>
 #include <stm32f10x_spi.h>
 #include "spidma.h"
+#include "tm_stm32f4_fonts.h"
 #include "ili9341.h"
 #include "glcdfont.c"
+
 
 #define LCD_PORT_BKL  GPIOA
 #define LCD_PORT GPIOA
@@ -50,8 +52,10 @@
 #define ILI9341_RAMRD 0x2E
 #define ILI9341_COLMOD 0x3A
 
+#define ILI9341_MADCTL_START 0xE8
+
 #define MADVAL(x) (((x) << 5) | 8)
-static uint8_t madctlcurrent = 0x88;
+static uint8_t madctlcurrent = ILI9341_MADCTL_START;
 
 struct ILI9341_cmdBuf {
   uint8_t command;   // ILI9341 command byte
@@ -59,6 +63,11 @@ struct ILI9341_cmdBuf {
   uint8_t len;       // length of parameter data
   uint8_t data[16];  // parameter data
 };
+
+/* Pin functions */
+uint16_t ILI9341_x;
+uint16_t ILI9341_y;
+
 
 static const struct ILI9341_cmdBuf initializers[] = {
   // SWRESET Software reset 
@@ -84,13 +93,13 @@ static const struct ILI9341_cmdBuf initializers[] = {
   // INVOFF Don't invert display
   { 0x20,  0, 0, 0},
   // Memory access directions. row address/col address, bottom to top refesh (10.1.27)
-  { ILI9341_MADCTL,  0, 1, { 0x88 }},
+  { ILI9341_MADCTL,  0, 1, { ILI9341_MADCTL_START }},
   // Color mode 16 bit (10.1.30
   { ILI9341_COLMOD,   0, 1, {0x55}},
-  // Column address set 0..127 
-  // { ILI9341_CASET,   0, 4, {0x00, 0x00, 0x00, 0x7F }},
-  // Row address set 0..159
-  // { ILI9341_RASET,   0, 4, {0x00, 0x00, 0x00, 0x9F }},
+  // Column address set 0..239
+  // { ILI9341_CASET,   0, 4, {0x00, 0x00, 0x00, 0xEF }},
+  // Row address set 0..319
+  // { ILI9341_RASET,   0, 4, {0x00, 0x00, 0x01, 0x3F }},
   // GMCTRP1 Gamma correction
   { 0xE0, 0, 15, {0x0F, 0x32, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
 			    0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00 }},
@@ -170,13 +179,76 @@ void ILI9341_putchar(uint8_t x,uint8_t y,uint8_t ascii, uint16_t fgc, uint16_t b
 		}
 	}
 
-	ILI9341_setAddrWindow((uint16_t) x*8, (uint16_t) y*6, (uint16_t) x*8+6, (uint16_t) y*6+4, 0x88);
+	ILI9341_setAddrWindow((uint16_t) x*8, (uint16_t) y*6, (uint16_t) x*8+6, (uint16_t) y*6+4, madctlcurrent);
 	GPIO_WriteBit(LCD_PORT,GPIO_PIN_DC, LCD_D);  // dc 1 = data, 0 = control
 	GPIO_ResetBits(LCD_PORT,GPIO_PIN_SCE);
 	spi_read_write16(SPILCD, 0, cbuf, 35, LCDSPEED);
 	GPIO_SetBits(LCD_PORT,GPIO_PIN_SCE); 
 }
 
+
+void ILI9341_Putc(uint16_t x, uint16_t y, char c, TM_FontDef_t *font, uint32_t foreground, uint32_t background) {
+	uint32_t i, b, j;
+	uint16_t LCDbuffer[512];
+	//uint32_t lcd;
+
+    /* Set coordinates */
+	ILI9341_x = x;
+	ILI9341_y = y;
+	if ((ILI9341_x + font->FontWidth) > ILI9341_width) {
+		//If at the end of a line of display, go to new line and set x to 0 position
+		ILI9341_y += font->FontHeight;
+		ILI9341_x = 0;
+	}
+	for (i = 0; i < font->FontHeight; i++) {
+		b = font->data[(c - 32) * font->FontHeight + i];
+
+		for (j = 0; j < font->FontWidth; j++) {
+			if ((b << j) & 0x8000) {
+				LCDbuffer[j+(i*font->FontWidth)]=((foreground << 8)|(foreground >> 8));
+			} else if ((background & ILI9341_TRANSPARENT) == 0) {
+				LCDbuffer[j+(i*font->FontWidth)]=((background << 8)|(background >> 8));
+			}
+		}
+	}
+
+	ILI9341_setAddrWindow((uint16_t) ILI9341_x, (uint16_t) ILI9341_y, (uint16_t) ILI9341_x + font->FontWidth-1, (uint16_t) ILI9341_y+font->FontHeight-1, madctlcurrent);
+	GPIO_WriteBit(LCD_PORT,GPIO_PIN_DC, LCD_D);  // dc 1 = data, 0 = control
+	GPIO_ResetBits(LCD_PORT,GPIO_PIN_SCE);
+	spi_read_write16(SPILCD, 0, LCDbuffer, (font->FontWidth*font->FontHeight), LCDSPEED);
+	GPIO_SetBits(LCD_PORT,GPIO_PIN_SCE); 
+
+	ILI9341_x += font->FontWidth;
+}
+
+void ILI9341_Puts(uint16_t x, uint16_t y, char *str, TM_FontDef_t *font, uint32_t foreground, uint32_t background) {
+	uint16_t startX = x;
+
+	/* Set X and Y coordinates */
+	ILI9341_x = x;
+	ILI9341_y = y;
+
+	while (*str) {
+		//New line
+		if (*str == '\n') {
+			ILI9341_y += font->FontHeight + 1;
+			//if after \n is also \r, than go to the left of the screen
+			if (*(str + 1) == '\r') {
+				ILI9341_x = 0;
+				str++;
+			} else {
+				ILI9341_x = startX;
+			}
+			str++;
+			continue;
+		} else if (*str == '\r') {
+			str++;
+			continue;
+		}
+
+		ILI9341_Putc(ILI9341_x, ILI9341_y, *str++, font, foreground, background);
+	}
+}
 
 void ILI9341_dup_putchar(uint16_t x,uint16_t y,uint8_t ascii, uint16_t fgc, uint16_t bgc) {
 	uint16_t cbuf[140]; // 5x7x4 pixel
@@ -202,14 +274,14 @@ void ILI9341_dup_putchar(uint16_t x,uint16_t y,uint8_t ascii, uint16_t fgc, uint
 		}
 	}
 
-	ILI9341_setAddrWindow((uint16_t) x*16, (uint16_t) y*12, (uint16_t) x*16+13, (uint16_t) y*12+9, 0x88);
+	ILI9341_setAddrWindow((uint16_t) x*16, (uint16_t) y*12, (uint16_t) x*16+13, (uint16_t) y*12+9, madctlcurrent);
 	GPIO_WriteBit(LCD_PORT,GPIO_PIN_DC, LCD_D);  // dc 1 = data, 0 = control
 	GPIO_ResetBits(LCD_PORT,GPIO_PIN_SCE);
 	spi_read_write16(SPILCD, 0, cbuf, 140, LCDSPEED);
 	GPIO_SetBits(LCD_PORT,GPIO_PIN_SCE); 
 }
 
-ILI9341_dup_print(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t bgc) {
+void ILI9341_dup_print_col(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t bgc) {
 
 	uint16_t ix,iy;
 	ix = x;
@@ -225,11 +297,27 @@ ILI9341_dup_print(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t b
 	}
 }
 
+void ILI9341_dup_print(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t bgc) {
+
+	uint16_t ix,iy;
+	ix = x;
+	iy = y;
+
+	while (*cbuf && ix>0) {
+		ILI9341_dup_putchar(ix,iy,*cbuf++, fgc, bgc);
+		iy++;
+		if (iy>25) {
+			iy=0;
+			ix--;
+		}
+	}
+}
+
 void ILI9341_fillscreen(uint16_t color) {
 	uint16_t x,y;
-	ILI9341_setAddrWindow(0,0,239,319,0x88);
-	for (x=0;x<240;x++) {
-		for (y=0;y<320;y++) {
+	ILI9341_setAddrWindow(0,0,319,239,madctlcurrent);
+	for (x=0;x<320;x++) {
+		for (y=0;y<240;y++) {
 			ILI9341_pushColor(&color,1);
 		}
 	}

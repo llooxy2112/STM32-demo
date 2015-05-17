@@ -20,16 +20,24 @@
  *    MV  col/row exchange    1 (exchange),      0 normal
  */
 
+/* Transparent background, only for strings and chars */
+#define ILI9341_TRANSPARENT			0x80000000
+
 #define MADCTLGRAPHICS 0x6
 #define MADCTLBMP      0x2
 
-#define ILI9341_width  240
-#define ILI9341_height 320
+#define ILI9341_width  320
+#define ILI9341_height 240
 
 void ILI9341_setAddrWindow(uint16_t x0, uint16_t y0, 
 			  uint16_t x1, uint16_t y1, uint8_t madctl);
 void ILI9341_pushColor(uint16_t *color, int cnt);
 void ILI9341_init();
 void ILI9341_backLight(uint8_t on);
+void ILI9341_dup_print(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t bgc);
+void ILI9341_print(uint8_t *cbuf, uint16_t x,uint16_t y, uint16_t fgc, uint16_t bgc);
+void ILI9341_Putc(uint16_t x, uint16_t y, char c, TM_FontDef_t *font, uint32_t foreground, uint32_t background);
+void ILI9341_Puts(uint16_t x, uint16_t y, char *str, TM_FontDef_t *font, uint32_t foreground, uint32_t background);
+
 
 #endif
